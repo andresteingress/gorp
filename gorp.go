@@ -215,26 +215,29 @@ func (t *TableMap) SetKeys(isAutoIncr bool, fieldNames ...string) *TableMap {
 	return t
 }
 
-// SetUniqueTogether lets you specify uniqueness constraints across multiple
-// columns on the table. Each call adds an additional constraint for the
-// specified columns.
-//
-// Automatically calls ResetSql() to ensure SQL statements are regenerated.
-//
-// Panics if fieldNames length < 2.
-//
-func (t *TableMap) SetUniqueTogether(fieldNames ...string) *TableMap {
-	if len(fieldNames) < 2 {
+
+// SetForeignKeys lets you specify the fields on a struct that map to foreign
+// key columns from other tables.
+func (t *TableMap) SetForeignKey(fieldName string, table string, field string) *TableMap {
+	if len(fieldName) == 0 {
 		panic(fmt.Sprintf(
-			"gorp: SetUniqueTogether: must provide at least two fieldNames to set uniqueness constraint."))
+			"gorp: SetForeignKey: fieldName string length must not be zero."))
 	}
 
-	columns := make([]string, 0)
-	for _, name := range fieldNames {
-		columns = append(columns, name)
+	if len(table) == 0 {
+		panic(fmt.Sprintf(
+		"gorp: SetForeignKey: table length string must not be zero."))
 	}
-	t.uniqueTogether = append(t.uniqueTogether, columns)
-	t.ResetSql()
+
+	if len(field) == 0 {
+		panic(fmt.Sprintf(
+		"gorp: SetForeignKey: field length string must not be zero."))
+	}
+
+	colmap := t.ColMap(fieldName)
+	colmap.isFK = true
+	colmap.fkTableName = table
+	colmap.fkFieldName = field
 
 	return t
 }
@@ -562,8 +565,12 @@ type ColumnMap struct {
 	fieldName  string
 	gotype     reflect.Type
 	isPK       bool
-	isAutoIncr bool
 	isNotNull  bool
+	isAutoIncr bool
+
+	isFK	   bool
+	fkTableName string
+	fkFieldName string
 }
 
 // Rename allows you to specify the column name in the table
@@ -810,6 +817,7 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 
 		s.WriteString(fmt.Sprintf("%s %s (", create, m.Dialect.QuotedTableForQuery(table.SchemaName, table.TableName)))
 		x := 0
+		existsForeignKey := false
 		for _, col := range table.Columns {
 			if !col.Transient {
 				if x > 0 {
@@ -829,6 +837,9 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 				}
 				if col.isAutoIncr {
 					s.WriteString(fmt.Sprintf(" %s", m.Dialect.AutoIncrStr()))
+				}
+				if col.isFK {
+					existsForeignKey = true
 				}
 
 				x++
@@ -856,9 +867,24 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 				s.WriteString(")")
 			}
 		}
+		if existsForeignKey {
+			var counter = 0
+			for _, col := range table.Columns {
+				if col.isFK {
+					s.WriteString(fmt.Sprintf(", constraint fk_%s_%v foreign key (", table.TableName, counter))
+					s.WriteString(m.Dialect.QuoteField(col.ColumnName))
+					s.WriteString(fmt.Sprintf(") references %s(", col.fkTableName))
+					s.WriteString(m.Dialect.QuoteField(col.fkFieldName))
+					s.WriteString(")")
+
+					counter++
+				}
+			}
+		}
 		s.WriteString(") ")
 		s.WriteString(m.Dialect.CreateTableSuffix())
 		s.WriteString(m.Dialect.QuerySuffix())
+
 		_, err = m.Exec(s.String())
 		if err != nil {
 			break
